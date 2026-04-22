@@ -70,7 +70,7 @@ const DISPLAY_NAMES = {
   "강오금": "강오금",
   "설화오금": "설화오금",
   "오금한철": "오금한철",
-  "오금철": "오철"
+  "오금철": "오금철"
 };
 const TARGET_ALIASES = {
   ...ALIASES,
