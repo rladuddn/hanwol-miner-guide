@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>광산 계산기</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <h1>광산 계산기</h1>
+
+    <div class="layout">
+      <div class="stack">
+        <section class="card">
+          <h2>단일 목표 계산</h2>
+          <div class="row">
+            <div>
+              <label for="targetItem">아이템 선택</label>
+              <select id="targetItem"></select>
+            </div>
+            <div>
+              <label for="targetQty">개수</label>
+              <input id="targetQty" type="number" min="1" step="1" value="1" />
+            </div>
+          </div>
+
+          <div class="row">
+            <div>
+              <label for="safetyPercent">여유분 (%)</label>
+              <input id="safetyPercent" type="number" min="0" step="1" value="20" />
+            </div>
+            <div>
+              <label for="safetyMode">여유분 적용 방식</label>
+              <select id="safetyMode">
+                <option value="all">모든 원재료에 적용</option>
+                <option value="rare">희귀 재료만 적용</option>
+                <option value="none">적용 안 함</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="btn-row">
+            <button class="primary" id="calcSingleBtn" type="button">단일 계산</button>
+            <button class="secondary" id="fillDemoBtn" type="button">예시 채우기</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>다중 아이템 계산</h2>
+          <label for="multiInput">형식: 아이템명,개수 (쉼표/탭 구분, 한 줄에 하나씩)</label>
+          <textarea id="multiInput" rows="8" placeholder="예시:
+설화강철,2
+설화오금,1
+오금한철,1"></textarea>
+          <div class="btn-row">
+            <button class="primary" id="calcMultiBtn" type="button">여러 항목 계산</button>
+            <button class="secondary" id="clearMultiBtn" type="button">입력 초기화</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>광산 1회당 평균 획득량</h2>
+          <div id="avgYieldAccordion" class="accordion avg-accordion"></div>
+        </section>
+      </div>
+
+      <div class="results">
+        <section class="card">
+          <h2>계산 결과</h2>
+          <div id="emptyState" class="subtle">조건 입력 후, 계산 버튼을 누르세요.</div>
+          <div id="resultArea" class="hidden">
+            <div class="summary-grid">
+              <div class="metric">
+                <div class="label">총 광산</div>
+                <div class="value" id="totalRuns">0</div>
+              </div>
+              <div class="metric">
+                <div class="label">초록</div>
+                <div class="value" id="runGreen">0</div>
+              </div>
+              <div class="metric">
+                <div class="label">파랑</div>
+                <div class="value" id="runBlue">0</div>
+              </div>
+              <div class="metric">
+                <div class="label">노랑</div>
+                <div class="value" id="runYellow">0</div>
+              </div>
+              <div class="metric">
+                <div class="label">빨강</div>
+                <div class="value" id="runRed">0</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card hidden" id="barCard">
+          <h2>광산 분배</h2>
+          <div id="mineBars" class="mine-bars"></div>
+        </section>
+
+        <section class="card hidden" id="targetSummaryCard">
+          <h2>요약</h2>
+          <div id="targetSummary" class="subtle"></div>
+        </section>
+
+        <div class="page-shell hidden" id="pageShell">
+          <div class="page-main">
+            <section class="card hidden page-panel" id="materialsCard">
+              <h2>필요 원재료 / 기대 획득량</h2>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>재료</th>
+                      <th>기본 필요량</th>
+                      <th>여유분 반영량</th>
+                      <th>기대 획득량</th>
+                      <th>초과량</th>
+                      <th>상태</th>
+                    </tr>
+                  </thead>
+                  <tbody id="materialsTableBody"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="card hidden page-panel" id="rawNeedCard">
+              <h2>필요 원재료량 요약</h2>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>원재료</th>
+                      <th>기본 필요량</th>
+                      <th>여유분 반영량</th>
+                    </tr>
+                  </thead>
+                  <tbody id="rawNeedTableBody"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="card hidden page-panel" id="recipeCard">
+              <h2>원재료 보기</h2>
+              <div id="recipeAccordion" class="accordion"></div>
+            </section>
+
+            <section class="card hidden page-panel" id="routeCard">
+              <h2>추천 경로</h2>
+              <div class="route-controls">
+                <button class="secondary" id="prevChunkBtn" type="button">&lt;</button>
+                <div id="chunkInfo" class="subtle">0 / 0</div>
+                <button class="secondary" id="nextChunkBtn" type="button">&gt;</button>
+                <button class="primary" id="copyRouteBtn" type="button">경로 복사</button>
+              </div>
+              <div class="route-canvas-wrap">
+                <button class="secondary route-zoom-btn" id="openRoutePopupBtn" type="button">+</button>
+                <canvas id="routeCanvas" width="960" height="960"></canvas>
+              </div>
+              <textarea id="routeText" rows="8" readonly></textarea>
+              <div id="routeMeta" class="subtle"></div>
+            </section>
+          </div>
+
+          <aside class="card page-nav">
+            <h3 class="page-nav-title">페이지 선택</h3>
+            <button class="page-btn active" data-page="materialsCard" type="button">필요 원재료 / 기대 획득량</button>
+            <button class="page-btn" data-page="rawNeedCard" type="button">필요 원재료량 요약</button>
+            <button class="page-btn" data-page="recipeCard" type="button">원재료 보기</button>
+            <button class="page-btn" data-page="routeCard" type="button">추천 경로</button>
+          </aside>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="routePopupModal">
+    <div class="modal-dialog route-modal-dialog">
+      <div class="modal-head">
+        <h3>추천 경로 - 확대</h3>
+        <div id="routePopupChunkInfo" class="subtle">0 / 0</div>
+        <button class="secondary modal-nav-btn" id="prevChunkPopupBtn" type="button">&lt;</button>
+        <button class="secondary modal-nav-btn" id="nextChunkPopupBtn" type="button">&gt;</button>
+        <button class="secondary modal-close-btn" id="closeRoutePopupBtn" type="button">닫기</button>
+      </div>
+      <div class="modal-body">
+        <canvas id="routeCanvasPopup" width="1600" height="1600"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
