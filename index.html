@@ -148,29 +148,72 @@
             </section>
 
             <section class="card hidden page-panel" id="routeCard">
-              <h2>추천 경로</h2>
+              <h2>광산 동선</h2>
+              <div class="route-setup">
+                <div class="route-setup-row">
+                  <div class="route-setup-item route-horse-select">
+                    <label for="horseSpeedSelect">말 선택</label>
+                    <select id="horseSpeedSelect">
+                      <option value="3000">기본말</option>
+                      <option value="3500">회색마</option>
+                      <option value="4200">적마</option>
+                      <option value="5200">백마</option>
+                      <option value="7000" selected>흑마</option>
+                    </select>
+                  </div>
+                  <div class="route-setup-item route-chunk-size">
+                    <label for="routeChunkSizeInput">화면 경로 수</label>
+                    <input id="routeChunkSizeInput" type="number" min="1" max="65" step="1" value="10" />
+                  </div>
+                  <button class="primary route-calc-btn" id="calcRoutePlanBtn" type="button">동선 계산</button>
+                </div>
+                <div class="route-mode-row">
+                  <label class="route-mode-toggle" for="routeUseCalcToggle">
+                    <input id="routeUseCalcToggle" type="checkbox" />
+                    <span>주괴 계산 결과 경로 사용</span>
+                  </label>
+                  <div id="routeModeHint" class="route-mode-hint subtle">수동 색상 선택 기준 경로</div>
+                </div>
+                <div class="route-setup-item route-color-group" id="routeColorGroup">
+                  <div class="route-color-head">
+                    <div class="route-color-title">광산 색 선택</div>
+                    <div class="route-color-note">복수 선택 가능</div>
+                  </div>
+                  <div class="route-color-grid">
+                    <label class="route-color-item route-color-0"><input class="route-color-check" type="checkbox" value="0" checked /><span>초록 (0)</span></label>
+                    <label class="route-color-item route-color-1"><input class="route-color-check" type="checkbox" value="1" checked /><span>파랑 (1)</span></label>
+                    <label class="route-color-item route-color-2"><input class="route-color-check" type="checkbox" value="2" checked /><span>노랑 (2)</span></label>
+                    <label class="route-color-item route-color-3"><input class="route-color-check" type="checkbox" value="3" checked /><span>빨강 (3)</span></label>
+                  </div>
+                </div>
+              </div>
+              <div class="route-canvas-wrap">
+                <button class="secondary route-zoom-btn" id="openRoutePopupBtn" type="button">+</button>
+                <canvas id="routeCanvas" width="960" height="960"></canvas>
+              </div>
+              <div class="route-canvas-tip subtle">Wheel zoom / Drag move / Double click reset</div>
               <div class="route-controls">
                 <button class="secondary" id="prevChunkBtn" type="button">&lt;</button>
                 <div id="chunkInfo" class="subtle">0 / 0</div>
                 <button class="secondary" id="nextChunkBtn" type="button">&gt;</button>
                 <button class="primary" id="copyRouteBtn" type="button">경로 복사</button>
               </div>
-              <div class="route-canvas-wrap">
-                <button class="secondary route-zoom-btn" id="openRoutePopupBtn" type="button">+</button>
-                <canvas id="routeCanvas" width="960" height="960"></canvas>
-              </div>
               <textarea id="routeText" rows="8" readonly></textarea>
               <div id="routeMeta" class="subtle"></div>
             </section>
           </div>
 
-          <aside class="card page-nav">
-            <h3 class="page-nav-title">페이지 선택</h3>
-            <button class="page-btn active" data-page="materialsCard" type="button">필요 원재료 / 기대 획득량</button>
-            <button class="page-btn" data-page="rawNeedCard" type="button">필요 원재료량 요약</button>
-            <button class="page-btn" data-page="recipeCard" type="button">원재료 보기</button>
-            <button class="page-btn" data-page="routeCard" type="button">추천 경로</button>
-          </aside>
+          <div class="side-column">
+            <section class="card route-shortcut-card">
+              <button class="page-btn route-shortcut" data-page="routeCard" type="button">광산 동선</button>
+            </section>
+            <aside class="card page-nav">
+              <h3 class="page-nav-title">페이지 선택</h3>
+              <button class="page-btn active" data-page="materialsCard" type="button">필요 원재료 / 기대 획득량</button>
+              <button class="page-btn" data-page="rawNeedCard" type="button">필요 원재료량 요약</button>
+              <button class="page-btn" data-page="recipeCard" type="button">원재료 보기</button>
+            </aside>
+          </div>
         </div>
       </div>
     </div>
@@ -179,7 +222,7 @@
   <div class="modal hidden" id="routePopupModal">
     <div class="modal-dialog route-modal-dialog">
       <div class="modal-head">
-        <h3>추천 경로 - 확대</h3>
+        <h3>광산 동선 - 확대</h3>
         <div id="routePopupChunkInfo" class="subtle">0 / 0</div>
         <button class="secondary modal-nav-btn" id="prevChunkPopupBtn" type="button">&lt;</button>
         <button class="secondary modal-nav-btn" id="nextChunkPopupBtn" type="button">&gt;</button>
