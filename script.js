@@ -85,6 +85,7 @@ const MINE_CLASS = { "초록": "green", "파랑": "blue", "노랑": "yellow", "�
 
 const MINE_DATA = buildAverageYields(RAW_TOTALS, SAMPLE_RUNS);
 const EPS = 1e-9;
+const STACK_SIZE = 64;
 const ROUTE_THRESHOLD = 7000;
 const ROUTE_DISTANCE_SURCHARGE = 1.6;
 const ROUTE_REVISIT_DISTANCE = 3000 * 5.5;
@@ -94,6 +95,12 @@ const ROUTE_CHUNK_SIZE_MAX = 65;
 const ROUTE_MAX_STARTS = 16;
 const ROUTE_MAP_WORLD_SIZE = 16000;
 const ROUTE_MAP_WORLD_HALF = ROUTE_MAP_WORLD_SIZE / 2;
+const ROUTE_BEACON_MIN_SAVING = 1300;
+const ROUTE_BEACON_PENALTY = 900;
+const ROUTE_CALC_BEACON_MIN_SAVING = 2200;
+const ROUTE_CALC_BEACON_PENALTY = 2200;
+const ROUTE_CLUSTER_SIZE_BONUS = 260;
+const ROUTE_CLUSTER_DENSITY_WEIGHT = 0.32;
 const ROUTE_CANVAS_PADDING = 36;
 const ROUTE_ZOOM_MIN = 0.7;
 const ROUTE_ZOOM_MAX = 7;
@@ -751,9 +758,19 @@ function formatFixed(value, digits = 2) {
   return normalized.toFixed(digits);
 }
 
+function formatSetCount(quantity) {
+  const numeric = Number(quantity);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "0set 0";
+  const total = Math.round(numeric);
+  const sets = Math.floor(total / STACK_SIZE);
+  const remainder = total % STACK_SIZE;
+  return `${sets}set ${remainder}`;
+}
+
 const ROUTE_STATE = {
   route: null,
   chunkIndex: 0,
+  progressIndex: 0,
   chunkSize: ROUTE_DEFAULT_CHUNK_SIZE,
   threshold: ROUTE_THRESHOLD,
   horseLabel: HORSE_SPEED_LABEL[ROUTE_THRESHOLD] || "흑마",
@@ -1037,6 +1054,232 @@ function recommendRouteFromRuns(runs, threshold = ROUTE_THRESHOLD) {
   return best;
 }
 
+function median(values) {
+  if (!Array.isArray(values) || values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    return (sorted[mid - 1] + sorted[mid]) * 0.5;
+  }
+  return sorted[mid];
+}
+
+function estimateClusterRadius(indices) {
+  if (!indices || indices.length < 3) return Infinity;
+  const nearest = [];
+  for (const i of indices) {
+    let best = Infinity;
+    for (const j of indices) {
+      if (i === j) continue;
+      const d = ROUTE_DIST[i][j];
+      if (d < best) best = d;
+    }
+    if (Number.isFinite(best)) nearest.push(best);
+  }
+  if (!nearest.length) return Infinity;
+  const med = median(nearest);
+  return Math.max(900, Math.min(4200, med * 2.2));
+}
+
+function buildClusters(indices) {
+  if (!indices || !indices.length) return [];
+  const radius = estimateClusterRadius(indices);
+  if (!Number.isFinite(radius)) return [indices.slice()];
+
+  const indexSet = new Set(indices);
+  const visited = new Set();
+  const clusters = [];
+
+  for (const start of indices) {
+    if (visited.has(start)) continue;
+    const queue = [start];
+    visited.add(start);
+    const cluster = [];
+    while (queue.length) {
+      const curr = queue.pop();
+      cluster.push(curr);
+      for (const next of indexSet) {
+        if (visited.has(next) || next === curr) continue;
+        if (ROUTE_DIST[curr][next] <= radius + EPS) {
+          visited.add(next);
+          queue.push(next);
+        }
+      }
+    }
+    clusters.push(cluster);
+  }
+
+  return clusters;
+}
+
+function nearestNeighborMean(idx, indices) {
+  if (!indices || indices.length <= 1) return 0;
+  const arr = [];
+  for (const j of indices) {
+    if (j === idx) continue;
+    arr.push(ROUTE_DIST[idx][j]);
+  }
+  arr.sort((a, b) => a - b);
+  const k = Math.min(3, arr.length);
+  if (k === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < k; i++) sum += arr[i];
+  return sum / k;
+}
+
+function clusterDensity(cluster) {
+  if (!cluster || cluster.length <= 1) return 0;
+  let sum = 0;
+  for (const idx of cluster) {
+    sum += nearestNeighborMean(idx, cluster);
+  }
+  const avg = sum / cluster.length;
+  return Number.isFinite(avg) ? avg : 0;
+}
+
+function clusterStartPoint(cluster) {
+  if (!cluster || cluster.length === 0) return -1;
+  if (cluster.length === 1) return cluster[0];
+  let best = cluster[0];
+  let bestScore = Infinity;
+  for (const idx of cluster) {
+    let score = 0;
+    for (const j of cluster) {
+      if (idx === j) continue;
+      score += ROUTE_DIST[idx][j];
+    }
+    if (score + EPS < bestScore) {
+      bestScore = score;
+      best = idx;
+    }
+  }
+  return best;
+}
+
+function interClusterDistance(fromIdx, cluster) {
+  if (fromIdx === null || fromIdx === undefined || fromIdx < 0) return 0;
+  let best = Infinity;
+  for (const idx of cluster) {
+    const d = ROUTE_DIST[fromIdx][idx];
+    if (d < best) best = d;
+  }
+  return Number.isFinite(best) ? best : 0;
+}
+
+function buildDenseClusterOrder(indices) {
+  if (!indices || !indices.length) return [];
+  const clustersRaw = buildClusters(indices);
+  const clusters = clustersRaw.map((cluster) => ({
+    points: cluster,
+    size: cluster.length,
+    density: clusterDensity(cluster)
+  }));
+
+  const used = new Set();
+  const order = [];
+  let currentLast = null;
+
+  while (used.size < clusters.length) {
+    let chosen = -1;
+    let bestScore = Infinity;
+    for (let i = 0; i < clusters.length; i++) {
+      if (used.has(i)) continue;
+      const cluster = clusters[i];
+      const distRaw = interClusterDistance(currentLast, cluster.points);
+      const dist = Number.isFinite(distRaw) ? distRaw : 0;
+      const density = Number.isFinite(cluster.density) ? cluster.density : 0;
+      const score =
+        dist +
+        density * ROUTE_CLUSTER_DENSITY_WEIGHT -
+        cluster.size * ROUTE_CLUSTER_SIZE_BONUS;
+      if (chosen < 0 || score + EPS < bestScore) {
+        bestScore = score;
+        chosen = i;
+      } else if (Math.abs(score - bestScore) <= EPS) {
+        if (cluster.size > clusters[chosen].size) {
+          chosen = i;
+        }
+      }
+    }
+
+    if (chosen < 0) {
+      chosen = clusters.findIndex((_, i) => !used.has(i));
+      if (chosen < 0) break;
+    }
+    used.add(chosen);
+    const cluster = clusters[chosen].points;
+    const start = currentLast === null
+      ? clusterStartPoint(cluster)
+      : cluster.reduce((best, idx) =>
+          ROUTE_DIST[currentLast][idx] + EPS < ROUTE_DIST[currentLast][best] ? idx : best
+        , cluster[0]);
+
+    let clusterOrder = greedyOrderSubset(cluster, start);
+    if (currentLast !== null && clusterOrder.length >= 2) {
+      const dStart = ROUTE_DIST[currentLast][clusterOrder[0]];
+      const dEnd = ROUTE_DIST[currentLast][clusterOrder[clusterOrder.length - 1]];
+      if (dEnd + EPS < dStart) {
+        clusterOrder = [...clusterOrder].reverse();
+      }
+    }
+
+    order.push(...clusterOrder);
+    currentLast = order[order.length - 1];
+  }
+
+  return order;
+}
+
+function recommendRouteFromRunsBalanced(runs, threshold = ROUTE_THRESHOLD) {
+  const requiredRuns = [runs[0] || 0, runs[1] || 0, runs[2] || 0, runs[3] || 0]
+    .map((v) => Math.max(0, Math.floor(Number(v) || 0)));
+  if (sumRemainingCounts(requiredRuns) <= 0) {
+    return { steps: [], totalTravel: 0, teleportCount: 0, beaconCount: 0 };
+  }
+
+  const availableCounts = ROUTE_POINTS_BY_COLOR.map((arr) => arr.length);
+  const canDoUniqueOnly = requiredRuns.every((count, color) => count <= availableCounts[color]);
+  if (!canDoUniqueOnly) {
+    return recommendRouteFromRuns(requiredRuns, threshold);
+  }
+
+  const selectedColors = [0, 1, 2, 3].filter((color) => requiredRuns[color] > 0);
+  const allTargets = selectedColors.flatMap((color) => ROUTE_POINTS_BY_COLOR[color]);
+  const denseAllOrder = buildDenseClusterOrder(allTargets);
+  if (!denseAllOrder.length) {
+    return recommendRouteFromRuns(requiredRuns, threshold);
+  }
+
+  const pickedByColor = [[], [], [], []];
+  const used = new Set();
+  for (const idx of denseAllOrder) {
+    if (used.has(idx)) continue;
+    const color = Number(ROUTE_MAP_POINTS[idx]?.color);
+    if (!Number.isInteger(color) || color < 0 || color > 3) continue;
+    if (pickedByColor[color].length >= requiredRuns[color]) continue;
+    used.add(idx);
+    pickedByColor[color].push(idx);
+  }
+
+  const complete = [0, 1, 2, 3].every((color) => pickedByColor[color].length === requiredRuns[color]);
+  if (!complete) {
+    return recommendRouteFromRuns(requiredRuns, threshold);
+  }
+
+  const finalTargets = [0, 1, 2, 3].flatMap((color) => pickedByColor[color]);
+  const denseFinalOrder = buildDenseClusterOrder(finalTargets);
+  if (!denseFinalOrder.length) {
+    return recommendRouteFromRuns(requiredRuns, threshold);
+  }
+  const optimized = optimizeTeleportsForOrder(denseFinalOrder, threshold, {
+    beaconPenalty: ROUTE_CALC_BEACON_PENALTY,
+    beaconMinSaving: ROUTE_CALC_BEACON_MIN_SAVING
+  });
+  const built = buildRouteFromOrderAndActions(denseFinalOrder, optimized.actions);
+  built.totalTravel = optimized.totalTravel;
+  return built;
+}
+
 function chooseStartPoints(indices, approxStarts = 0) {
   if (!indices.length) return [];
   if (approxStarts <= 0 || approxStarts >= indices.length) {
@@ -1127,12 +1370,15 @@ function buildColorPriorityOrderApprox(colorGroups, approxStarts = 0) {
   return bestOrder;
 }
 
-function optimizeTeleportsForOrder(order, threshold) {
+function optimizeTeleportsForOrder(order, threshold, options = {}) {
   if (!order.length) {
     return { totalTravel: 0, actions: [] };
   }
 
-  const states = [{ dist: 0, cost: 0, prev: null, action: "start" }];
+  const beaconPenalty = Math.max(0, Number(options.beaconPenalty ?? ROUTE_BEACON_PENALTY) || 0);
+  const beaconMinSaving = Math.max(0, Number(options.beaconMinSaving ?? ROUTE_BEACON_MIN_SAVING) || 0);
+
+  const states = [{ dist: 0, score: 0, cost: 0, prev: null, action: "start" }];
   let frontier = [0];
   const hasBeacons = ROUTE_BEACON_DIST.length > 0;
 
@@ -1144,50 +1390,65 @@ function optimizeTeleportsForOrder(order, threshold) {
 
     for (const sid of frontier) {
       const state = states[sid];
-      const travelOptions = [[directDist, "travel"]];
+      const travelOptions = [[directDist, "travel", 0]];
       if (hasBeacons) {
         const beaconList = ROUTE_BEACON_DIST[currPoint] || [];
         for (let bIdx = 0; bIdx < beaconList.length; bIdx++) {
-          travelOptions.push([beaconList[bIdx], `beacon:${bIdx}`]);
+          const bDist = beaconList[bIdx];
+          if (directDist - bDist + EPS < beaconMinSaving) {
+            continue;
+          }
+          travelOptions.push([bDist, `beacon:${bIdx}`, beaconPenalty]);
         }
       }
 
-      for (const [travelDist, action] of travelOptions) {
+      for (const [travelDist, action, extraPenalty] of travelOptions) {
         let newDist = state.dist + travelDist;
         if (newDist > threshold) newDist = threshold;
-        candidates.push([newDist, state.cost + travelDist, sid, action]);
+        candidates.push([
+          newDist,
+          state.score + travelDist + extraPenalty,
+          state.cost + travelDist,
+          sid,
+          action
+        ]);
       }
 
       if (state.dist + EPS >= threshold) {
-        candidates.push([0, state.cost, sid, "teleport"]);
+        candidates.push([0, state.score, state.cost, sid, "teleport"]);
       }
     }
 
     candidates.sort((a, b) => {
       if (Math.abs(b[0] - a[0]) > EPS) return b[0] - a[0];
-      return a[1] - b[1];
+      if (Math.abs(a[1] - b[1]) > EPS) return a[1] - b[1];
+      return a[2] - b[2];
     });
 
     const kept = [];
-    let bestCost = Infinity;
+    let bestScore = Infinity;
     for (const candidate of candidates) {
-      const cost = candidate[1];
-      if (cost + EPS >= bestCost) continue;
+      const score = candidate[1];
+      if (score + EPS >= bestScore) continue;
       kept.push(candidate);
-      bestCost = cost;
+      bestScore = score;
     }
     kept.reverse();
 
     frontier = [];
-    for (const [dist, cost, prev, action] of kept) {
-      states.push({ dist, cost, prev, action });
+    for (const [dist, score, cost, prev, action] of kept) {
+      states.push({ dist, score, cost, prev, action });
       frontier.push(states.length - 1);
     }
   }
 
   let endState = frontier[0];
   for (const sid of frontier) {
-    if (states[sid].cost + EPS < states[endState].cost) {
+    if (
+      states[sid].score + EPS < states[endState].score ||
+      (Math.abs(states[sid].score - states[endState].score) <= EPS &&
+        states[sid].cost + EPS < states[endState].cost)
+    ) {
       endState = sid;
     }
   }
@@ -1339,6 +1600,26 @@ function buildChunkRouteText(route, chunkIndex, chunkSize = ROUTE_STATE.chunkSiz
     lines.push(`${i + 1}. ${buildRouteStepLabel(route.steps[i])}`);
   }
   return lines.join("\n");
+}
+
+function getRouteProgressIndex(route) {
+  if (!route || !route.steps || !route.steps.length) return 0;
+  const maxIndex = route.steps.length - 1;
+  const raw = Number(ROUTE_STATE.progressIndex || 0);
+  if (!Number.isFinite(raw)) return 0;
+  return Math.max(0, Math.min(maxIndex, Math.floor(raw)));
+}
+
+function getRouteActiveChunkIndex(route, chunkSize = ROUTE_STATE.chunkSize) {
+  const size = normalizeRouteChunkSize(chunkSize);
+  const progress = getRouteProgressIndex(route);
+  return Math.floor(progress / size);
+}
+
+function getRouteStepStatus(stepIndex, progressIndex) {
+  if (stepIndex < progressIndex) return "passed";
+  if (stepIndex === progressIndex) return "current";
+  return "pending";
 }
 
 function routeBounds() {
@@ -1518,7 +1799,13 @@ function drawRouteLegend(ctx) {
   ctx.restore();
 }
 
-function drawRouteChunk(route, chunkIndex, canvasRef = "routeCanvas", chunkSize = ROUTE_STATE.chunkSize) {
+function drawRouteChunk(
+  route,
+  chunkIndex,
+  canvasRef = "routeCanvas",
+  chunkSize = ROUTE_STATE.chunkSize,
+  progressIndex = getRouteProgressIndex(route)
+) {
   const canvas = typeof canvasRef === "string" ? $(canvasRef) : canvasRef;
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
@@ -1600,12 +1887,13 @@ function drawRouteChunk(route, chunkIndex, canvasRef = "routeCanvas", chunkSize 
     const step = route.steps[i];
     const p = ROUTE_MAP_POINTS[step.pointIdx];
     const pos = routeToCanvas(p.x, p.y, width, height, padding, viewState);
-    const isStart = i === start;
-    const isEnd = i === end - 1;
-    const radius = isStart || isEnd ? 7.5 : 5.2;
+    const status = getRouteStepStatus(i, progressIndex);
+    const isCurrent = status === "current";
+    const isPassed = status === "passed";
+    const radius = isCurrent ? 8 : 5.4;
 
     ctx.beginPath();
-    ctx.fillStyle = isStart ? "#22c55e" : isEnd ? "#ef4444" : "#DDE6ED";
+    ctx.fillStyle = isCurrent ? "#22c55e" : isPassed ? "#ef4444" : "#DDE6ED";
     ctx.strokeStyle = "rgba(14,25,39,0.98)";
     ctx.lineWidth = 1.8;
     ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
@@ -1617,7 +1905,6 @@ function drawRouteChunk(route, chunkIndex, canvasRef = "routeCanvas", chunkSize 
     ctx.fillText(String(p.name), pos.x + 8, pos.y - 8);
   }
 
-  drawRouteLegend(ctx);
 }
 
 function copyTextToClipboard(text) {
@@ -1663,10 +1950,81 @@ function openRoutePopup() {
 function redrawRouteCanvases() {
   if (!ROUTE_STATE.route || !ROUTE_STATE.route.steps.length) return;
   const chunkSize = normalizeRouteChunkSize(ROUTE_STATE.chunkSize);
-  drawRouteChunk(ROUTE_STATE.route, ROUTE_STATE.chunkIndex, "routeCanvas", chunkSize);
+  drawRouteChunk(
+    ROUTE_STATE.route,
+    ROUTE_STATE.chunkIndex,
+    "routeCanvas",
+    chunkSize,
+    getRouteProgressIndex(ROUTE_STATE.route)
+  );
   if (isRoutePopupOpen()) {
-    drawRouteChunk(ROUTE_STATE.route, ROUTE_STATE.chunkIndex, "routeCanvasPopup", chunkSize);
+    drawRouteChunk(
+      ROUTE_STATE.route,
+      ROUTE_STATE.chunkIndex,
+      "routeCanvasPopup",
+      chunkSize,
+      getRouteProgressIndex(ROUTE_STATE.route)
+    );
   }
+}
+
+function renderRouteChecklist(route) {
+  const list = $("routeChecklist");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!route || !route.steps || !route.steps.length) {
+    list.innerHTML = '<div class="route-checklist-empty">경로가 없습니다.</div>';
+    return;
+  }
+
+  const progress = getRouteProgressIndex(route);
+  route.steps.forEach((step, index) => {
+    const status = getRouteStepStatus(index, progress);
+    const item = document.createElement("div");
+    item.className = `route-check-item ${status}`;
+
+    const label = document.createElement("label");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = status === "passed";
+    checkbox.disabled = true;
+
+    const no = document.createElement("span");
+    no.className = "route-check-no";
+    no.textContent = `${index + 1}.`;
+
+    const text = document.createElement("span");
+    text.className = "route-check-label";
+    text.textContent = buildRouteStepLabel(step);
+
+    label.appendChild(checkbox);
+    label.appendChild(no);
+    label.appendChild(text);
+    item.appendChild(label);
+    list.appendChild(item);
+  });
+
+  const currentEl = list.querySelector(".route-check-item.current");
+  if (currentEl instanceof HTMLElement) {
+    currentEl.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function moveRouteProgress(delta) {
+  const route = ROUTE_STATE.route;
+  if (!route || !route.steps || !route.steps.length) return;
+  const current = getRouteProgressIndex(route);
+  const next = Math.max(0, Math.min(route.steps.length - 1, current + delta));
+  if (next === current) return;
+  ROUTE_STATE.progressIndex = next;
+  refreshRoutePanel();
+}
+
+function resetRouteProgress() {
+  const route = ROUTE_STATE.route;
+  if (!route || !route.steps || !route.steps.length) return;
+  ROUTE_STATE.progressIndex = 0;
+  refreshRoutePanel();
 }
 
 function zoomRouteCanvasAt(canvas, clientX, clientY, nextZoom) {
@@ -1826,18 +2184,19 @@ function updateRouteModeUI() {
 function setRouteUnavailable(message, detail = "") {
   ROUTE_STATE.route = null;
   ROUTE_STATE.chunkIndex = 0;
+  ROUTE_STATE.progressIndex = 0;
   resetRouteView("routeCanvas");
   resetRouteView("routeCanvasPopup");
   closeRoutePopup();
-  if ($("chunkInfo")) $("chunkInfo").textContent = "0 / 0";
   if ($("routePopupChunkInfo")) $("routePopupChunkInfo").textContent = "0 / 0";
-  if ($("routeText")) $("routeText").value = message;
   if ($("routeMeta")) $("routeMeta").textContent = detail;
-  if ($("prevChunkBtn")) $("prevChunkBtn").disabled = true;
-  if ($("nextChunkBtn")) $("nextChunkBtn").disabled = true;
-  if ($("prevChunkPopupBtn")) $("prevChunkPopupBtn").disabled = true;
-  if ($("nextChunkPopupBtn")) $("nextChunkPopupBtn").disabled = true;
   if ($("openRoutePopupBtn")) $("openRoutePopupBtn").disabled = true;
+  if ($("routeProgressResetBtn")) $("routeProgressResetBtn").disabled = true;
+  if ($("routeProgressNextBtn")) $("routeProgressNextBtn").disabled = true;
+  const list = $("routeChecklist");
+  if (list) {
+    list.innerHTML = `<div class="route-checklist-empty">${message}</div>`;
+  }
   const canvas = $("routeCanvas");
   const ctx = canvas?.getContext("2d");
   if (canvas) canvas.classList.remove("dragging");
@@ -1875,7 +2234,7 @@ function calculateRouteFromPlannerOptions() {
       setRouteUnavailable("주괴 계산 결과의 광산 분배가 0입니다.", "계산 조건을 확인해주세요.");
       return;
     }
-    recommended = recommendRouteFromRuns(runs, threshold);
+    recommended = recommendRouteFromRunsBalanced(runs, threshold);
     if (!recommended || !recommended.steps || !recommended.steps.length) {
       setRouteUnavailable("결과 기반 경로를 만들 수 없습니다.", "광산 분배 결과를 확인해주세요.");
       return;
@@ -1916,6 +2275,7 @@ function calculateRouteFromPlannerOptions() {
 
   ROUTE_STATE.route = recommended;
   ROUTE_STATE.chunkIndex = 0;
+  ROUTE_STATE.progressIndex = 0;
   resetRouteView("routeCanvas");
   resetRouteView("routeCanvasPopup");
   refreshRoutePanel();
@@ -1926,22 +2286,23 @@ function refreshRoutePanel() {
   if (!route || !route.steps.length) return;
 
   const chunkSize = normalizeRouteChunkSize(ROUTE_STATE.chunkSize);
+  const progress = getRouteProgressIndex(route);
+  ROUTE_STATE.progressIndex = progress;
   const chunkCount = getRouteChunkCount(route, chunkSize);
-  ROUTE_STATE.chunkIndex = Math.max(0, Math.min(ROUTE_STATE.chunkIndex, chunkCount - 1));
+  ROUTE_STATE.chunkIndex = getRouteActiveChunkIndex(route, chunkSize);
   const chunkNo = ROUTE_STATE.chunkIndex + 1;
-  const atStart = ROUTE_STATE.chunkIndex <= 0;
-  const atEnd = ROUTE_STATE.chunkIndex >= chunkCount - 1;
+  const chunkRange = getRouteChunkRange(route, ROUTE_STATE.chunkIndex, chunkSize);
+  const isLastProgress = progress >= route.steps.length - 1;
 
-  $("chunkInfo").textContent = `${chunkNo} / ${chunkCount}`;
-  $("prevChunkBtn").disabled = atStart;
-  $("nextChunkBtn").disabled = atEnd;
-  if ($("routePopupChunkInfo")) $("routePopupChunkInfo").textContent = `${chunkNo} / ${chunkCount}`;
-  if ($("prevChunkPopupBtn")) $("prevChunkPopupBtn").disabled = atStart;
-  if ($("nextChunkPopupBtn")) $("nextChunkPopupBtn").disabled = atEnd;
+  if ($("routePopupChunkInfo")) {
+    $("routePopupChunkInfo").textContent = `현재 ${progress + 1} / ${route.steps.length} | 화면 ${chunkNo} / ${chunkCount} (${chunkRange.start + 1}-${chunkRange.end})`;
+  }
   if ($("openRoutePopupBtn")) {
     $("openRoutePopupBtn").disabled = false;
   }
-  $("routeText").value = buildChunkRouteText(route, ROUTE_STATE.chunkIndex, chunkSize);
+  if ($("routeProgressResetBtn")) $("routeProgressResetBtn").disabled = progress <= 0;
+  if ($("routeProgressNextBtn")) $("routeProgressNextBtn").disabled = isLastProgress;
+  renderRouteChecklist(route);
   const threshold = Number(route.threshold || ROUTE_STATE.threshold || ROUTE_THRESHOLD);
   const horseLabel = route.horseLabel || ROUTE_STATE.horseLabel || getPlannerHorseLabel(threshold);
   const source = route.routeSource || ROUTE_STATE.sourceMode || "manual";
@@ -1954,7 +2315,7 @@ function refreshRoutePanel() {
     const colorText = (colors || []).map((c) => ROUTE_COLOR_LABEL[c] || c).join(", ");
     detail = ` | 색상 ${colorText}`;
   }
-  $("routeMeta").textContent = `총 이동거리 ${formatFixed(route.totalTravel, 2)} | 말 ${horseLabel} (${threshold}) | 화면 ${chunkSize}개 | ${sourceText} | 텔레포트 ${route.teleportCount}회 | 비콘 ${route.beaconCount}회${detail}`;
+  $("routeMeta").textContent = `총 이동거리 ${formatFixed(route.totalTravel, 2)} | 말 ${horseLabel} (${threshold}) | 화면 ${chunkSize}개 | 현재 ${progress + 1}/${route.steps.length} | ${sourceText} | 텔레포트 ${route.teleportCount}회 | 비콘 ${route.beaconCount}회${detail}`;
   redrawRouteCanvases();
 }
 
@@ -1984,6 +2345,14 @@ function setActivePage(pageId) {
   });
 
   const hasResult = !$("resultArea").classList.contains("hidden");
+  const resultCard = $("resultCard");
+  if (resultCard) {
+    if (pageId === "routeCard") {
+      resultCard.classList.add("hidden");
+    } else {
+      resultCard.classList.remove("hidden");
+    }
+  }
   const hideOverviewCards = pageId === "routeCard" || !hasResult;
   if (hideOverviewCards) {
     $("barCard").classList.add("hidden");
@@ -2105,7 +2474,7 @@ function renderRecipeAccordion(craftedRows) {
 
     const meta = document.createElement("span");
     meta.className = "drop-meta";
-    meta.textContent = `필요 ${row.qty}`;
+    meta.textContent = `필요 ${formatSetCount(row.qty)}`;
 
     const childCount = document.createElement("span");
     childCount.className = "drop-count";
@@ -2134,7 +2503,7 @@ function renderRecipeAccordion(craftedRows) {
 
         const qty = document.createElement("div");
         qty.className = "ingredient-qty";
-        qty.textContent = `x ${child.qty}`;
+        qty.textContent = `x ${formatSetCount(child.qty)}`;
 
         const kind = document.createElement("div");
         kind.className = "ingredient-kind";
@@ -2424,7 +2793,7 @@ function render(result) {
   });
 
   $("targetSummary").innerHTML = result.targets
-    .map(t => `<span class="tag">${toDisplayName(t.item)} x ${t.qty}</span>`)
+    .map(t => `<span class="tag">${toDisplayName(t.item)} x ${formatSetCount(t.qty)}</span>`)
     .join("");
 
   $("materialsTableBody").innerHTML = "";
@@ -2438,8 +2807,8 @@ function render(result) {
     $("materialsTableBody").insertAdjacentHTML("beforeend", `
       <tr>
         <td>${mat} ${isRareMaterial(mat) ? '<span class="tag">희귀</span>' : ''}</td>
-        <td>${baseNeed}</td>
-        <td>${safetyNeed}</td>
+        <td>${formatSetCount(baseNeed)}</td>
+        <td>${formatSetCount(safetyNeed)}</td>
         <td>${formatFixed(got, 2)}</td>
         <td class="${over > 0 ? 'warn' : ''}">${formatFixed(over, 2)}</td>
         <td class="${ok ? 'good' : 'bad'}">${ok ? '충족' : '부족'}</td>
@@ -2456,8 +2825,8 @@ function render(result) {
       `
       <tr>
         <td>${toDisplayName(mat)}</td>
-        <td>${baseNeed}</td>
-        <td>${safetyNeed}</td>
+        <td>${formatSetCount(baseNeed)}</td>
+        <td>${formatSetCount(safetyNeed)}</td>
       </tr>
     `
     );
@@ -2627,16 +2996,12 @@ function bindRouteEvents() {
     applyChunkSize();
   });
 
-  $("prevChunkBtn").addEventListener("click", () => {
-    if (!ROUTE_STATE.route) return;
-    ROUTE_STATE.chunkIndex = Math.max(0, ROUTE_STATE.chunkIndex - 1);
-    refreshRoutePanel();
+  $("routeProgressResetBtn")?.addEventListener("click", () => {
+    resetRouteProgress();
   });
 
-  $("nextChunkBtn").addEventListener("click", () => {
-    if (!ROUTE_STATE.route) return;
-    ROUTE_STATE.chunkIndex += 1;
-    refreshRoutePanel();
+  $("routeProgressNextBtn")?.addEventListener("click", () => {
+    moveRouteProgress(1);
   });
 
   $("copyRouteBtn").addEventListener("click", async () => {
@@ -2657,18 +3022,6 @@ function bindRouteEvents() {
 
   $("closeRoutePopupBtn")?.addEventListener("click", () => {
     closeRoutePopup();
-  });
-
-  $("prevChunkPopupBtn")?.addEventListener("click", () => {
-    if (!ROUTE_STATE.route) return;
-    ROUTE_STATE.chunkIndex = Math.max(0, ROUTE_STATE.chunkIndex - 1);
-    refreshRoutePanel();
-  });
-
-  $("nextChunkPopupBtn")?.addEventListener("click", () => {
-    if (!ROUTE_STATE.route) return;
-    ROUTE_STATE.chunkIndex += 1;
-    refreshRoutePanel();
   });
 
   $("routePopupModal")?.addEventListener("click", (event) => {

@@ -66,7 +66,7 @@
       </div>
 
       <div class="results">
-        <section class="card">
+        <section class="card" id="resultCard">
           <h2>계산 결과</h2>
           <div id="emptyState" class="subtle">조건 입력 후, 계산 버튼을 누르세요.</div>
           <div id="resultArea" class="hidden">
@@ -192,13 +192,10 @@
                 <canvas id="routeCanvas" width="960" height="960"></canvas>
               </div>
               <div class="route-canvas-tip subtle">Wheel zoom / Drag move / Double click reset</div>
-              <div class="route-controls">
-                <button class="secondary" id="prevChunkBtn" type="button">&lt;</button>
-                <div id="chunkInfo" class="subtle">0 / 0</div>
-                <button class="secondary" id="nextChunkBtn" type="button">&gt;</button>
+              <div class="route-arrow-tip subtle">실선: 기본 이동 / 회색 점선: 비콘 TP / 빨간 점선: 광산 TP</div>
+              <div class="route-controls route-copy-only">
                 <button class="primary" id="copyRouteBtn" type="button">경로 복사</button>
               </div>
-              <textarea id="routeText" rows="8" readonly></textarea>
               <div id="routeMeta" class="subtle"></div>
             </section>
           </div>
@@ -224,12 +221,19 @@
       <div class="modal-head">
         <h3>광산 동선 - 확대</h3>
         <div id="routePopupChunkInfo" class="subtle">0 / 0</div>
-        <button class="secondary modal-nav-btn" id="prevChunkPopupBtn" type="button">&lt;</button>
-        <button class="secondary modal-nav-btn" id="nextChunkPopupBtn" type="button">&gt;</button>
         <button class="secondary modal-close-btn" id="closeRoutePopupBtn" type="button">닫기</button>
       </div>
-      <div class="modal-body">
-        <canvas id="routeCanvasPopup" width="1600" height="1600"></canvas>
+      <div class="modal-body route-modal-body">
+        <div class="route-popup-canvas-wrap">
+          <canvas id="routeCanvasPopup" width="1600" height="1600"></canvas>
+        </div>
+        <aside class="route-popup-side">
+          <div class="route-popup-actions">
+            <button class="secondary" id="routeProgressResetBtn" type="button">초기화</button>
+            <button class="primary" id="routeProgressNextBtn" type="button">다음 광산</button>
+          </div>
+          <div id="routeChecklist" class="route-checklist"></div>
+        </aside>
       </div>
     </div>
   </div>
