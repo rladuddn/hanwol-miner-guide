@@ -11,7 +11,9 @@ const RECIPES = {
   "백련정강": { "백련강": 2, "청강석": 3, "흑옥": 1, "묵철": 2 },
   "설화강철": { "백련정강": 1, "무괴철": 2, "자금": 2, "빙옥": 3 },
   "설화오금": { "백련정강": 1, "강오금": 2, "백현철": 1, "빙옥": 3 },
-  "오금한철": { "오금철": 5, "한철": 3, "강철": 3, "금강석": 1, "강오금": 1 }
+  "오금한철": { "오금철": 5, "한철": 3, "강철": 3, "금강석": 1, "강오금": 1 },
+  "금한철": { "오금철": 2, "백현철": 2, "강오금": 2, "백련정강": 1, "금강석": 5, "만년한철": 2 },
+  "일광용린": { "용린광": 2, "자금": 5, "설화오금": 2, "금강석": 2, "무괴철": 3, "일옥": 5 }
 };
 
 const SAMPLE_RUNS = {
@@ -39,6 +41,7 @@ const RAW_TOTALS = {
     "청강석": 26,
     "현철": 19,
     "한철": 3,
+    "만년한철": 2,
     "빙옥": 2,
     "광산초": 137
   },
@@ -49,6 +52,7 @@ const RAW_TOTALS = {
     "오철": 79,
     "정철광": 73,
     "금강석": 4,
+    "용린광": 4,
     "광산초": 121
   },
   "빨강": {
@@ -59,15 +63,20 @@ const RAW_TOTALS = {
     "매화옥": 28,
     "묵철": 25,
     "흑옥": 20,
+    "일옥": 5,
     "광산초": 143
   }
 };
 
 const ALIASES = {
-  "돌": "돌덩어리"
+  "돌": "돌덩어리",
+  "용광철": "오금철",
+  "철화오금": "설화오금"
 };
 const DISPLAY_NAMES = {
   "강오금": "강오금",
+  "금한철": "금한철",
+  "일광용린": "일광용린",
   "설화오금": "설화오금",
   "오금한철": "오금한철",
   "오금철": "오금철"
@@ -75,6 +84,8 @@ const DISPLAY_NAMES = {
 const TARGET_ALIASES = {
   ...ALIASES,
   "강오금": "강오금",
+  "금한철": "금한철",
+  "일광용린": "일광용린",
   "설화오금": "설화오금",
   "오금한철": "오금한철",
   "오금철": "오금철"
@@ -734,6 +745,48 @@ function $(id) {
   return document.getElementById(id);
 }
 
+const THEME_STORAGE_KEY = "materialCalcThemeMode";
+
+function getStoredThemeMode() {
+  try {
+    const saved = localStorage.getItem(THEME_STORAGE_KEY);
+    if (saved === "dark" || saved === "light") return saved;
+  } catch (_) {}
+  return "light";
+}
+
+function updateThemeToggleButton() {
+  const btn = $("themeToggleBtn");
+  if (!btn) return;
+  const isDark = document.body.classList.contains("theme-dark");
+  btn.textContent = isDark ? "다크모드 ON" : "다크모드 OFF";
+  btn.setAttribute("aria-pressed", isDark ? "true" : "false");
+}
+
+function applyThemeMode(mode, options = {}) {
+  const persist = options.persist !== false;
+  const nextMode = mode === "dark" ? "dark" : "light";
+  document.body.classList.toggle("theme-dark", nextMode === "dark");
+
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, nextMode);
+    } catch (_) {}
+  }
+
+  updateThemeToggleButton();
+}
+
+function bindThemeToggle() {
+  const btn = $("themeToggleBtn");
+  if (!btn) return;
+
+  btn.addEventListener("click", () => {
+    const isDark = document.body.classList.contains("theme-dark");
+    applyThemeMode(isDark ? "light" : "dark");
+  });
+}
+
 function toPositiveInt(value, label) {
   const num = Number(value);
   if (!Number.isFinite(num) || !Number.isInteger(num) || num <= 0) {
@@ -760,11 +813,11 @@ function formatFixed(value, digits = 2) {
 
 function formatSetCount(quantity) {
   const numeric = Number(quantity);
-  if (!Number.isFinite(numeric) || numeric <= 0) return "0set 0";
+  if (!Number.isFinite(numeric) || numeric <= 0) return "0세트 0개";
   const total = Math.round(numeric);
   const sets = Math.floor(total / STACK_SIZE);
   const remainder = total % STACK_SIZE;
-  return `${sets}set ${remainder}`;
+  return `${sets}세트 ${remainder}개`;
 }
 
 const ROUTE_STATE = {
@@ -3057,6 +3110,8 @@ function bindPageEvents() {
 }
 
 function init() {
+  applyThemeMode(getStoredThemeMode(), { persist: false });
+  bindThemeToggle();
   populateTargetSelect();
   renderAvgYieldBox();
   bindEvents();
